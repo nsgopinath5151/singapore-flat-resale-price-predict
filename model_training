@@ -1,0 +1,80 @@
+import pandas as pd
+import numpy as np
+import glob
+import os
+import pickle
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestRegressor
+
+def load_and_preprocess_data(data_path='data/'):
+    """Loads all CSVs, cleans, and preprocesses the data."""
+    all_files = glob.glob(os.path.join(data_path, "*.csv"))
+    if not all_files:
+        raise FileNotFoundError(f"No CSV files found in the directory: {data_path}")
+        
+    df_list = [pd.read_csv(file) for file in all_files]
+    df = pd.concat(df_list, ignore_index=True)
+    
+    # Feature Engineering
+    df['sale_year'] = pd.to_datetime(df['month']).dt.year
+    df['remaining_lease_years'] = 99 - (df['sale_year'] - df['lease_commence_date'])
+    df['storey_avg'] = df['storey_range'].apply(lambda x: (int(x.split(' TO ')[0]) + int(x.split(' TO ')[1])) / 2)
+    
+    # Select features and target
+    features = ['town', 'flat_type', 'floor_area_sqm', 'lease_commence_date', 'sale_year', 'remaining_lease_years', 'storey_avg']
+    target = 'resale_price'
+    
+    df_final = df[features + [target]].dropna()
+    
+    X = df_final.drop(target, axis=1)
+    y = np.log1p(df_final[target])
+    
+    return X, y
+
+def train_and_save_model(X, y, save_path='artifacts/'):
+    """Trains the model and saves the pipeline and necessary data for the app."""
+    categorical_features = ['town', 'flat_type']
+    numerical_features = ['floor_area_sqm', 'lease_commence_date', 'sale_year', 'remaining_lease_years', 'storey_avg']
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', StandardScaler(), numerical_features),
+            ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
+        ],
+        remainder='passthrough'
+    )
+    
+    model_pipeline = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('regressor', RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1, max_depth=16))
+    ])
+    
+    # Train the model
+    print("Training model...")
+    model_pipeline.fit(X, y)
+    print("Training complete.")
+    
+    # Create directory if not exists
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Save the entire pipeline
+    with open(os.path.join(save_path, 'regressor_model.pkl'), 'wb') as f:
+        pickle.dump(model_pipeline, f)
+        
+    # Save unique values for Streamlit app dropdowns
+    app_data = {
+        'town_unique': sorted(list(X['town'].unique())),
+        'flat_type_unique': sorted(list(X['flat_type'].unique())),
+        'storey_range_options': sorted(list(pd.read_csv(glob.glob(os.path.join('data/', "*.csv"))[0])['storey_range'].unique()))
+    }
+    with open(os.path.join(save_path, 'app_data.pkl'), 'wb') as f:
+        pickle.dump(app_data, f)
+        
+    print(f"Model and app data saved to {save_path}")
+
+if __name__ == "__main__":
+    X_data, y_data = load_and_preprocess_data()
+    train_and_save_model(X_data, y_data)
